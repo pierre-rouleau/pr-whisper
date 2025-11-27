@@ -216,18 +216,17 @@ the text at point."
     ;; Record audio in the specified wav-file
     (my-whisper-record-audio-in wav-file)
 
-    ;; Run Whisper STT with selected model
+    ;; Run Whisper STT (Speech To Text) with selected model
     (let* ((whisper-cmd
-            (if vocab-prompt
-                (format "%s -m %s -f %s -nt -np --prompt \"%s\" 2>/dev/null"
-                        (my-whisper--cli-path)
-                        (my-whisper--model-path fast-mode-p)
-                        wav-file
-                        (replace-regexp-in-string "\"" "\\\\\"" vocab-prompt))
-              (format "%s -m %s -f %s -nt -np 2>/dev/null"
-                      (my-whisper--cli-path)
-                      (my-whisper--model-path fast-mode-p)
-                      wav-file)))
+            (format "%s -m %s -f %s -nt -np %s 2>/dev/null"
+                    (my-whisper--cli-path)
+                    (my-whisper--model-path fast-mode-p)
+                    wav-file
+                    (if vocab-prompt
+                        (format "--prompt \"%s\""
+                                (replace-regexp-in-string "\"" "\\\\\""
+                                                          vocab-prompt))
+                      "")))
            (proc
             (start-process "whisper-stt" temp-buf "/bin/sh" "-c" whisper-cmd)))
       ;; Properly capture `temp-buf` using a lambda
