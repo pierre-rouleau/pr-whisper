@@ -67,6 +67,15 @@
   :group 'my-whisper
   :type 'directory)
 
+(defcustom my-whisper-sox "sox"
+  "The SoX Sound eXchange program name, with or without path.
+
+The default is sox, without a path; you can use this unchanged if it
+is installed in a directory in your PATH.  If it is stored somewhere else, then
+include its directory path."
+  :group 'my-whisper
+  :type 'string)
+
 (defconst my-whisper-model-fast "ggml-base.en.bin"
   "Base model, fast mode.")
 
@@ -138,8 +147,8 @@ Returns nil if file doesn't exist or is empty."
   "Validate current settings.  Issue a user error if something is wrong."
   (let ((cli-path (my-whisper--cli-path))
         (model-path (my-whisper--model-path)))
-    (unless (executable-find "sox")
-      (user-error "The sox command is not accessible in your PATH."))
+    (unless (executable-find my-whisper-sox)
+      (user-error "The sox command is not accessible; is my-whisper-sox valid?"))
     (unless (file-directory-p my-whisper-homedir)
       (user-error "Invalid my-whisper-homedir (%s)" my-whisper-homedir))
     (unless (file-executable-p cli-path)
@@ -174,7 +183,7 @@ Recording is starting (%s mode). Editing halted. Press C-g to stop."
   ;;  -c channel : number of channel audio in the file.  Use 1.
   ;;  -b bits: bit-length of each encoded sample.
   ;;  --no-show-progress : do not print a progress bar in stdout.
-  (start-process "record-audio" nil "sox"
+  (start-process "record-audio" nil my-whisper-sox
                  "-d" "-r" " 16000" "-c" "1" "-b" "16"
                  wav-file
                  "--no-show-progress")
