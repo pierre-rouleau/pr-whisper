@@ -205,6 +205,7 @@ Recording starting with %s. Editing halted. Press C-g to stop."
         (while t (sit-for 1))
       (quit (interrupt-process "record-audio"))))
 
+;;;###autoload
 (defun my-whisper-transcribe (&optional fast-mode-p)
   "Record audio and transcribe text in current buffer.
 By default, or when FAST-MODE-P is nil, use the model selected by
