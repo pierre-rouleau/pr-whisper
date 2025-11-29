@@ -4,7 +4,7 @@
 
 ;; Author: Pierre Rouleau based on original work done by Raoul Comninos
 ;; Version: 0.0.2
-;; Package-Version: 20251129.1045
+;; Package-Version: 20251129.1057
 ;; Package-Requires: ((emacs "25.1"))
 ;; Keywords: convenience, speech, whisper, transcription
 ;; URL: https://github.com/emacselements/my-whisper
@@ -77,12 +77,12 @@
   :link '(url-link :tag "my-whisper @ Github"
                    "https://github.com/emacselements/my-whisper"))
 
-(defcustom my-whisper-recording-lighter " 🎙️ "
+(defcustom my-whisper-lighter-when-recording " 🎙️ "
   "Mode line lighter used by `my-whisper-mode' when recording."
   :group 'my-whisper
   :type 'string)
 
-(defcustom my-whisper-idle-lighter " ⏸️"
+(defcustom my-whisper-lighter-when-idle " ⏸️"
   "Mode line lighter used by `my-whisper-mode' when idle."
   :group 'my-whisper
   :type 'string)
@@ -252,7 +252,7 @@ Recording starting with %s. Editing halted. Press C-g to stop."
                    my-whisper--wav-file
                    "--no-show-progress")
     (setq my-whisper--recording-process-name record-process-name)
-    (my-whisper--set-lighter-to my-whisper-recording-lighter)
+    (my-whisper--set-lighter-to my-whisper-lighter-when-recording)
     (message "Recording audio!")))
 
 (defun my-whisper--transcribe ()
@@ -312,7 +312,7 @@ Recording starting with %s. Editing halted. Press C-g to stop."
   (interrupt-process my-whisper--recording-process-name)
   (setq my-whisper--recording-process-name nil)
   (message "Audio recording stopped.")
-  (my-whisper--set-lighter-to my-whisper-idle-lighter)
+  (my-whisper--set-lighter-to my-whisper-lighter-when-idle)
   (my-whisper--transcribe))
 
 ;;;###autoload
@@ -337,7 +337,7 @@ When stopped, stops recording and insert transcribed text in current
 buffer.
 
 \\{my-whisper-keymap}"
-  :lighter my-whisper-recording-lighter
+  :lighter my-whisper-lighter-when-recording
   :keymap my-whisper-keymap
   :global t
   (let ((model my-whisper-model))
