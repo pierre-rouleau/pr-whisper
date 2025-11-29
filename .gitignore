@@ -1,0 +1,25 @@
+# Compiled
+*.elc
+
+# Packaging
+.cask/
+.eask/
+.eldev/
+.keg/
+
+# Built distribution
+dist/
+
+# Backup files
+*~
+
+# Undo-tree save-files
+*.~undo-tree
+
+# Generated HTML
+*.html
+
+# macOS Files
+.DS_Store
+
+# ----------------------------------------------------------------------------
