@@ -44,11 +44,11 @@
 ;; - Clean temporary file management
 
 ;; Basic usage:
-;;   M-x my-whisper-transcribe-fast  ; Fast mode (base.en model)
-;;   M-x my-whisper-transcribe       ; Accurate mode (medium.en)
+;;       M-x my-whisper-transcribe  ; Use mode selected by `my-whisper-model'
+;;                                  ; which is the accurate mode by default.
+;;   C-u M-x my-whisper-transcribe  ; Fast mode (base.en model)
 
 ;; Recommended keybindings (add to your init.el):
-;;   (global-set-key (kbd "C-c v") #'my-whisper-transcribe-fast)
 ;;   (global-set-key (kbd "C-c n") #'my-whisper-transcribe)
 
 ;; See the README for installation and configuration details.
@@ -67,6 +67,15 @@
   :group 'my-whisper
   :type 'directory)
 
+(defcustom my-whisper-sox "sox"
+  "The SoX Sound eXchange program name, with or without path.
+
+The default is sox, without a path; you can use this unchanged if it
+is installed in a directory in your PATH.  If it is stored somewhere else, then
+include its directory path."
+  :group 'my-whisper
+  :type 'string)
+
 (defcustom my-whisper-model-fast "ggml-base.en.bin"
   "Whisper model for fast transcription mode.
 This model is used by `my-whisper-transcribe-fast'."
@@ -77,16 +86,27 @@ This model is used by `my-whisper-transcribe-fast'."
   "Whisper model for accurate transcription mode.
 This model is used by `my-whisper-transcribe'.
 
-Common options:
-- ggml-medium.en.bin: Good balance of speed and accuracy
+The common options (all English) models:
 - ggml-large-v3-turbo.bin: Best accuracy, slower
-- ggml-small.en.bin: Faster than medium, less accurate"
+- ggml-medium.en.bin     : Good balance of speed and accuracy
+- ggml-small.en.bin      : Faster than medium, less accurate
+- ggml-base.en.bin       : Fastest, least accurate"
   :group 'my-whisper
   :type '(choice
-          (const :tag "Medium model" "ggml-medium.en.bin")
-          (const :tag "Large model" "ggml-large-v3-turbo.bin")
-          (const :tag "Small model" "ggml-small.en.bin")
-          (string :tag "Other")))
+          (const :tag "Large  model, best accuracy, slower  " "ggml-large-v3-turbo.bin")
+          (const :tag "Medium model, balance speed/accuracy " "ggml-medium.en.bin")
+          (const :tag "Small  model, faster, less accurate  " "ggml-small.en.bin")
+          (const :tag "Base   model, fastest, least accurate" "ggml-base.en.bin")
+          (string :tag "Other model")))
+
+(defun my-whisper-model-desc (model)
+  "Return a description string of specified MODEL, a string."
+  (cond
+   ((string= model "ggml-large-v3-turbo.bin") "Large model, best accuracy, slower")
+   ((string= model "ggml-medium.en.bin")      "Medium model, balance speed/accuracy")
+   ((string= model "ggml-small.en.bin")       "Small model, faster, less accurate" )
+   ((string= model "ggml-base.en.bin")        "Base model, fastest, least accurate")
+   (t model)))
 
 (defun my-whisper--cli-path ()
   "Return the path to the whisper-cli executable."
@@ -100,8 +120,9 @@ If MODEL is nil, use `my-whisper-model'."
           (directory-file-name my-whisper-homedir)
           (or model my-whisper-model)))
 
-
-(defcustom my-whisper-vocabulary-file (expand-file-name (locate-user-emacs-file "whisper-vocabulary.txt"))
+(defcustom my-whisper-vocabulary-file (expand-file-name
+                                       (locate-user-emacs-file
+                                        "whisper-vocabulary.txt"))
   "Path to file containing vocabulary hints for Whisper.
 This should contain proper nouns, specialized terms, etc.
 The file should contain comma-separated words/phrases that Whisper
@@ -137,128 +158,120 @@ Returns nil if file doesn't exist or is empty."
 
 (defun my-whisper--validate-environment (&optional model)
   "Validate current settings.
-If MODEL is nil, validate `my-whisper-model'."
+If MODEL is nil, use `my-whisper-model'."
   (let ((cli-path (my-whisper--cli-path))
         (model-path (my-whisper--model-path model)))
+    (unless (executable-find my-whisper-sox)
+      (user-error "The sox command is not accessible; is my-whisper-sox valid?"))
     (unless (file-directory-p my-whisper-homedir)
       (user-error "Invalid my-whisper-homedir (%s)" my-whisper-homedir))
     (unless (file-executable-p cli-path)
       (if (file-exists-p cli-path)
-          (user-error "My-whisper-cli (%s) is not an executable file"
+          (user-error "My-whisper-cli (%s) is not an executable file!"
                       cli-path))
-      (user-error "My-whisper-cli (%s) does not exist" cli-path))
+      (user-error "My-whisper-cli (%s) does not exist!" cli-path))
     (unless (file-exists-p model-path)
-      (user-error "My-whisper-model-path (%s) does not exist"
+      (user-error "My-whisper-model-path (%s) does not exist!"
                   model-path))))
 
-(defun my-whisper-transcribe-fast ()
-  "Record audio and transcribe using Whisper base.en model (fast).
-Records audio until you press \\[keyboard-quit], then transcribes it
-and inserts the text at point."
-  (interactive)
-  (my-whisper--validate-environment my-whisper-model-fast)
-  (let* ((original-buf (current-buffer))
-         (original-point (point-marker)) ; Marker tracks position even if buffer changes
-         (wav-file (format "/tmp/whisper-recording-%s.wav" (emacs-pid)))
-         (temp-buf (generate-new-buffer " *Whisper Temp*"))
-         (vocab-prompt (my-whisper--get-vocabulary-prompt))
-         (vocab-word-count (my-whisper--check-vocabulary-length)))
+(defun my-whisper--start-message (model vocab-word-count)
+  "Inform user recording is starting with MODEL, warn if vocabulary is too large.
+The VOCAB-WORD-COUNT is the number of words detected in the vocabulary file."
+  (if (and vocab-word-count (> vocab-word-count 150))
+      (message "\
+Recording starting with %s. Editing halted. Press C-g to stop.
+WARNING: Vocabulary file has %d words (max: 150)!"
+               (my-whisper-model-desc model)
+               vocab-word-count)
+    (message "\
+Recording starting with %s. Editing halted. Press C-g to stop."
+             (my-whisper-model-desc model))))
 
-    ;; Start recording audio
-    (start-process "record-audio" nil "/bin/sh" "-c"
-                   (format "sox -d -r 16000 -c 1 -b 16 %s --no-show-progress 2>/dev/null" wav-file))
-    ;; Inform user recording has started with vocabulary warning if needed
-    (if (and vocab-word-count (> vocab-word-count 150))
-        (message "Recording started (fast mode). Press C-g to stop. WARNING: Vocabulary file has %d words (max: 150)!" vocab-word-count)
-      (message "Recording started (fast mode). Press C-g to stop."))
+(defun my-whisper-record-audio-in (wav-file)
+  "Record audio, store it in the specified WAV-FILE."
+  ;; Start recording audio.
+  ;; Use the sox command. Ref: https://sourceforge.net/projects/sox/
+  ;;  -d : record audio
+  ;;  -r sample-rate in Hz
+  ;;  -c channel : number of channel audio in the file.  Use 1.
+  ;;  -b bits: bit-length of each encoded sample.
+  ;;  --no-show-progress : do not print a progress bar in stdout.
+  (start-process "record-audio" nil my-whisper-sox
+                 "-d" "-r" " 16000" "-c" "1" "-b" "16"
+                 wav-file
+                 "--no-show-progress")
     ;; Wait for user to stop (C-g)
     (condition-case nil
         (while t (sit-for 1))
-      (quit (interrupt-process "record-audio")))
+      (quit (interrupt-process "record-audio"))))
 
-    ;; Run Whisper STT with base.en model
-    (let* ((whisper-cmd (if vocab-prompt
-                            (format "%s -m %s -f %s -nt -np --prompt \"%s\" 2>/dev/null"
-                                    (my-whisper--cli-path)
-                                    (my-whisper--model-path my-whisper-model-fast)
-                                    wav-file
-                                    (replace-regexp-in-string "\"" "\\\\\"" vocab-prompt))
-                          (format "%s -m %s -f %s -nt -np 2>/dev/null"
-                                  (my-whisper--cli-path)
-                                  (my-whisper--model-path my-whisper-model-fast)
-                                  wav-file)))
-           (proc (start-process "whisper-stt" temp-buf "/bin/sh" "-c" whisper-cmd)))
-      ;; Properly capture `temp-buf` using a lambda
-      (set-process-sentinel
-       proc
-       `(lambda (proc event)
-          (when (string= event "finished\n")
-            (when (buffer-live-p ,temp-buf)
-              (let* ((output (string-trim (with-current-buffer ,temp-buf (buffer-string))))) ;; Trim excess whitespace
-                (when (buffer-live-p ,original-buf)
-                  (with-current-buffer ,original-buf
-                    (goto-char ,original-point)
-                    (insert output " ") ;; Insert text with a single space after
-                    (goto-char (point))))) ;; Move cursor to end of inserted text
-              ;; Clean up temporary buffer
-              (kill-buffer ,temp-buf))))))))
+;;;###autoload
+(defun my-whisper-transcribe (&optional fast-mode-p)
+  "Record audio and transcribe text in current buffer.
+By default, or when FAST-MODE-P is nil, use the model selected by
+the `my-whisper-model' user-option.
+When FAST-MODE-P is non-nil use the fast mode, the model specified by
+`my-whisper-model-fast'.
 
-(defun my-whisper-transcribe ()
-  "Record audio and transcribe using configurable Whisper model (accurate).
-Uses the model specified in `my-whisper-model-path'.  Records audio
-until you press \\[keyboard-quit], then transcribes it and inserts the
-text at point."
-  (interactive)
-  (my-whisper--validate-environment)
-  (let* ((original-buf (current-buffer))
-         (original-point (point-marker)) ; Marker tracks position even if buffer changes
-         (wav-file (format "/tmp/whisper-recording-%s.wav" (emacs-pid)))
-         (temp-buf (generate-new-buffer " *Whisper Temp*"))
-         (vocab-prompt (my-whisper--get-vocabulary-prompt))
-         (vocab-word-count (my-whisper--check-vocabulary-length)))
+Record audio until you press \\[keyboard-quit], then transcribes it and insert
+the text at point."
+  (interactive "P")
+  (let ((model (if fast-mode-p my-whisper-model-fast
+                 my-whisper-model)))
+    (my-whisper--validate-environment model)
+    (let* ((original-buf (current-buffer))
+           (original-point (point-marker)) ; Marker tracks position even if buffer changes
+           (wav-file (format "/tmp/whisper-recording-%s.wav" (emacs-pid)))
+           (temp-buf (generate-new-buffer " *Whisper Temp*"))
+           (vocab-prompt (my-whisper--get-vocabulary-prompt))
+           (vocab-word-count (my-whisper--check-vocabulary-length))
+           (whisper-cmd-list (list (expand-file-name (my-whisper--cli-path))
+                                   "-m" (expand-file-name (my-whisper--model-path model))
+                                   "-f" (expand-file-name wav-file)
+                                   "-nt"
+                                   "-np")))
+      ;; if a vocabulary is defined, add a prompt command with it.
+      (when vocab-prompt
+        (setq whisper-cmd-list (reverse whisper-cmd-list))
+        (push "--prompt" whisper-cmd-list)
+        (push (replace-regexp-in-string "\"" "\\\\\"" vocab-prompt) whisper-cmd-list)
+        (setq whisper-cmd-list (reverse whisper-cmd-list)))
 
-    ;; Start recording audio
-    (start-process "record-audio" nil "/bin/sh" "-c"
-                   (format "sox -d -r 16000 -c 1 -b 16 %s --no-show-progress 2>/dev/null" wav-file))
-    ;; Inform user recording has started with vocabulary warning if needed
-    (if (and vocab-word-count (> vocab-word-count 150))
-        (message "Recording started (accurate mode). Press C-g to stop. WARNING: Vocabulary file has %d words (max: 150)!" vocab-word-count)
-      (message "Recording started (accurate mode). Press C-g to stop."))
-    ;; Wait for user to stop (C-g)
-    (condition-case nil
-        (while t (sit-for 1))
-      (quit (interrupt-process "record-audio")))
+      ;; (message "%S" whisper-cmd-list)
+      ;; Inform user recording is starting. Warn if vocabulary is too large.
+      (my-whisper--start-message model vocab-word-count)
 
-    ;; Run Whisper STT
-    (let* ((whisper-cmd (if vocab-prompt
-                            (format "%s -m %s -f %s -nt -np --prompt \"%s\" 2>/dev/null"
-                                    (my-whisper--cli-path)
-                                    (my-whisper--model-path)
-                                    wav-file
-                                    (replace-regexp-in-string "\"" "\\\\\"" vocab-prompt))
-                          (format "%s -m %s -f %s -nt -np 2>/dev/null"
-                                  (my-whisper--cli-path)
-                                  (my-whisper--model-path)
-                                  wav-file)))
-           (proc (start-process "whisper-stt" temp-buf "/bin/sh" "-c" whisper-cmd)))
-      ;; Properly capture `temp-buf` using a lambda
-      (set-process-sentinel
-       proc
-       `(lambda (proc event)
-          (if (string= event "finished\n")
-              (when (buffer-live-p ,temp-buf)
-                (let* ((output (string-trim (with-current-buffer ,temp-buf (buffer-string)))))
-                  (if (string-empty-p output)
-                      (message "Whisper: No transcription output.")
-                    (when (buffer-live-p ,original-buf)
-                      (with-current-buffer ,original-buf
-                        (goto-char ,original-point)
-                        (insert output " ")
-                        (goto-char (point))))))
-                (kill-buffer ,temp-buf)
-                (when (file-exists-p ,wav-file)
-                  (delete-file ,wav-file)))
-            (message "Whisper process error: %s" event)))))))
+      ;; Record audio in the specified wav-file
+      (my-whisper-record-audio-in wav-file)
+
+      ;; Run Whisper STT (Speech To Text) with selected model
+      (make-process
+       :name "whisper-stt"
+       :buffer temp-buf
+       :command whisper-cmd-list
+       :connection-type 'pipe
+       :stderr (get-buffer-create "*my-whisper err*")
+       :sentinel (lambda (_proc event)
+                   (if (string= event "finished\n")
+                       (when (buffer-live-p temp-buf)
+                         ;; Trim excess white space
+                         (let ((output (string-trim
+                                        (with-current-buffer temp-buf
+                                          (buffer-string)))))
+                           (if (string-empty-p output)
+                               (message "Whisper: No transcription output.")
+                             (when (buffer-live-p original-buf)
+                               (with-current-buffer original-buf
+                                 (goto-char original-point)
+                                 ;; Insert text, then a single space
+                                 (insert output " ")))))
+                         ;; Clean up temporary buffer
+                         (kill-buffer temp-buf)
+                         ;; And delete WAV file that has been processed.
+                         (when (file-exists-p wav-file)
+                           (delete-file wav-file)))
+                     ;; No detection of end: error!
+                     (message "Whisper process error: %s" event)))))))
 
 (provide 'my-whisper)
 ;;; my-whisper.el ends here

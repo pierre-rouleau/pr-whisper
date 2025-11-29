@@ -1,0 +1,28 @@
+#!/bin/sh
+# SH FILE: build
+#
+# Purpose   : Byte compile package to detect warnings.
+# Created   : Tuesday, November 11 2025.
+# ----------------------------------------------------------------------------
+# Module Description
+# ------------------
+#
+# A simple build script to byte compile the code in isolation, treating all
+# warnings as errors.
+
+# ----------------------------------------------------------------------------
+# Dependencies
+# ------------
+#
+# None.
+
+# ----------------------------------------------------------------------------
+# Code
+# ----
+#
+#
+
+set -x
+emacs -Q  --batch -L . --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile my-whisper.el
+
+# ----------------------------------------------------------------------------
