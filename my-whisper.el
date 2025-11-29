@@ -82,7 +82,7 @@
   :group 'my-whisper
   :type 'string)
 
-(defcustom my-whisper-idle-lighter "!🎙️ "
+(defcustom my-whisper-idle-lighter " ⏸️"
   "Mode line lighter used by `my-whisper-mode' when idle."
   :group 'my-whisper
   :type 'string)
@@ -119,7 +119,7 @@ The common options (all English) models:
   :group 'my-whisper
   :type '(choice
           (const :tag "Large  model, best accuracy, slower  " "ggml-large-v3-turbo.bin")
-          ;; (const :tag "Medium model, balance speed/accuracy " "ggml-medium.en.bin")
+          (const :tag "Medium model, balance speed/accuracy " "ggml-medium.en.bin")
           (const :tag "Small  model, faster, less accurate  " "ggml-small.en.bin")
           (const :tag "Base   model, fastest, least accurate" "ggml-base.en.bin")
           (string :tag "Other model")))
@@ -305,17 +305,24 @@ Recording starting with %s. Editing halted. Press C-g to stop."
       (user-error "Already recording!")
     (my-whisper-record-audio)))
 
+;; [:todo 2025-11-28, by Pierre Rouleau: allow customization of the selected
+;; key bindings]
+(defvar my-whisper-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c g") #'my-whisper-stop-record)
+    (define-key map (kbd "C-c r") #'my-whisper-record-again)
+    map))
+
 ;;;###autoload
 (define-minor-mode my-whisper-mode
   "Minor mode to transcribe speech to text.
 When activate, start recording.
 When stopped, stops recording and insert transcribed text in current
-buffer."
+buffer.
+
+\\{my-whisper-keymap}"
   :lighter my-whisper-recording-lighter
-  :keymap (let ((map (make-sparse-keymap)))
-            (define-key map (kbd "C-c g") #'my-whisper-stop-record)
-            (define-key map (kbd "C-c r") #'my-whisper-record-again)
-            map)
+  :keymap my-whisper-keymap
   :global t
   (let ((model my-whisper-model))
     (my-whisper--validate-environment model)
