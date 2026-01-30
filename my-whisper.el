@@ -294,6 +294,7 @@ Recording starting with %s. Editing halted. Press C-g to stop."
      :connection-type 'pipe
      :stderr (get-buffer-create "*my-whisper err*")
      :sentinel (lambda (_proc event)
+                 (message "event %s" event)
                  (if (string= event "finished\n")
                      (when (buffer-live-p temp-buf)
                        ;; Trim excess white space
