@@ -44,13 +44,11 @@
 (defvar pr-whisper--server-process nil
   "Process handle for whisper-server when using server backend.")
 
-;;;###autoload
 (defun pr-whisper--server-path ()
   "Return path to whisper-server executable."
   (format "%s/build/bin/whisper-server"
           (directory-file-name pr-whisper-homedir)))
 
-;;;###autoload
 (defun pr-whisper--start-server ()
   "Start whisper-server in background for transcription."
   (when (and pr-whisper--server-process
@@ -62,7 +60,6 @@
                        "-m" (expand-file-name (pr-whisper--model-path pr-whisper-model))
                        "--port" (number-to-string pr-whisper-server-port))))
 
-;;;###autoload
 (defun pr-whisper--stop-server ()
   "Stop whisper-server if running."
   (when (and pr-whisper--server-process
@@ -105,7 +102,6 @@
      "text\r\n"
      "--" boundary "--\r\n")))
 
-;;;###autoload
 (defun pr-whisper--transcribe-via-server (wav-file)
   "Transcribe WAV-FILE using whisper-server HTTP API."
   (let* ((marker (point-marker))
