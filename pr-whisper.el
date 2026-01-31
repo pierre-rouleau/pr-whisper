@@ -326,14 +326,20 @@ shorter than `pr-whisper-history-min-length'."
                           ((pr-whisper--noise-p output)
                            (message "Whisper: Ignored noise: %s" output))
                           (t
+                           ;; Add to history first, before attempting insertion
+                           ;; so transcription is saved even if insertion fails
+                           (pr-whisper--add-to-history output (buffer-name original-buf))
                            (when (buffer-live-p original-buf)
                              (with-current-buffer original-buf
-                               (if (eq major-mode 'vterm-mode)
-                                   (vterm-send-string (concat output " "))
-                                 (goto-char original-point)
-                                 ;; Insert text, then a single space
-                                 (insert output " ")))
-                             (pr-whisper--add-to-history output (buffer-name original-buf))))))
+                               (condition-case nil
+                                   (if (eq major-mode 'vterm-mode)
+                                       (vterm-send-string (concat output " "))
+                                     (goto-char original-point)
+                                     ;; Insert text, then a single space
+                                     (insert output " "))
+                                 (buffer-read-only
+                                  (message "Whisper: Buffer is read-only, text saved to history: %s"
+                                           (truncate-string-to-width output 50 nil nil "...")))))))))
                        ;; Clean up temporary buffer
                        (kill-buffer temp-buf)
                        ;; And delete WAV file that has been processed.
