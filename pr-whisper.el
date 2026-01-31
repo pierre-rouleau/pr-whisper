@@ -317,12 +317,11 @@ shorter than `pr-whisper-history-min-length'."
   "Transcribe audio previously recorded using configured backend."
   (if (eq pr-whisper-backend 'server)
       (pr-whisper--transcribe-via-server pr-whisper--wav-file)
-    (pr-whisper--transcribe-via-cli)))
+    (pr-whisper--transcribe-via-cli pr-whisper--wav-file)))
 
-(defun pr-whisper--transcribe-via-cli ()
-  "Transcribe audio using whisper-cli."
+(defun pr-whisper--transcribe-via-cli (wav-file)
+  "Transcribe WAV-FILE using whisper-cli."
   (let* ((model pr-whisper-model)
-         (wav-file pr-whisper--wav-file)
          (original-buf (current-buffer))
          (original-point (point-marker)) ; Marker tracks position even if buffer changes
          (vocab-prompt (pr-whisper--get-vocabulary-prompt))
