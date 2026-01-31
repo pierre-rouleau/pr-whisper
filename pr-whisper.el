@@ -60,6 +60,12 @@
 (require 'ring)
 (declare-function vterm-send-string "vterm")
 
+;; Server backend autoloads - loaded on demand when pr-whisper-backend is 'server
+(autoload 'pr-whisper--server-path "pr-whisper-server")
+(autoload 'pr-whisper--start-server "pr-whisper-server")
+(autoload 'pr-whisper--stop-server "pr-whisper-server")
+(autoload 'pr-whisper--transcribe-via-server "pr-whisper-server")
+
 (defgroup pr-whisper nil
   "Speech-to-text using Whisper.cpp system."
   :group 'convenience
@@ -132,11 +138,6 @@ Store the models in the directory identified by `pr-whisper-homedir'."
 (defun pr-whisper--cli-path ()
   "Return the path to the whisper-cli executable."
   (format "%s/build/bin/whisper-cli"
-          (directory-file-name pr-whisper-homedir)))
-
-(defun pr-whisper--server-path ()
-  "Return path to whisper-server executable."
-  (format "%s/build/bin/whisper-server"
           (directory-file-name pr-whisper-homedir)))
 
 (defun pr-whisper--model-path (&optional model)
@@ -265,118 +266,11 @@ Each entry is a cons cell (TEXT . BUFFER-NAME).
 Entries are promoted to most recent when re-inserted via
 `pr-whisper-insert-from-history', implementing LRU-style eviction.")
 
-(defvar pr-whisper--server-process nil
-  "Process handle for whisper-server when using server backend.")
-
 (defun pr-whisper--set-lighter-to (lighter)
   "Update pr-whisper lighter in the mode lines of all buffers to LIGHTER."
   (setcar (cdr (assq 'pr-whisper-mode minor-mode-alist)) lighter)
   ;; force update of all modelines
   (force-mode-line-update t))
-
-(defun pr-whisper--start-server ()
-  "Start whisper-server in background for transcription."
-  (when (and pr-whisper--server-process
-             (process-live-p pr-whisper--server-process))
-    (kill-process pr-whisper--server-process))
-  (setq pr-whisper--server-process
-        (start-process "whisper-server" nil
-                       (pr-whisper--server-path)
-                       "-m" (expand-file-name (pr-whisper--model-path pr-whisper-model))
-                       "--port" (number-to-string pr-whisper-server-port))))
-
-(defun pr-whisper--stop-server ()
-  "Stop whisper-server if running."
-  (when (and pr-whisper--server-process
-             (process-live-p pr-whisper--server-process))
-    (kill-process pr-whisper--server-process)
-    (setq pr-whisper--server-process nil)))
-
-(defvar url-request-method)
-
-(defun pr-whisper--server-ready-p ()
-  "Check if whisper-server is ready to accept requests."
-  (condition-case nil
-      (let ((url-request-method "GET"))
-        (with-current-buffer
-            (url-retrieve-synchronously
-             (format "http://localhost:%d/health" pr-whisper-server-port)
-             t nil 0.1)
-          (prog1 t (kill-buffer))))
-    (error nil)))
-
-(defun pr-whisper--wait-for-server (timeout)
-  "Wait up to TIMEOUT seconds for server to be ready."
-  (let ((deadline (+ (float-time) timeout)))
-    (while (and (< (float-time) deadline)
-                (not (pr-whisper--server-ready-p)))
-      (sleep-for 0.1))))
-
-(defvar url-request-extra-headers)
-(defvar url-request-data)
-
-(defun pr-whisper--make-multipart-body (wav-file boundary)
-  "Create multipart/form-data body for WAV-FILE upload with BOUNDARY."
-  (let ((file-content (with-temp-buffer
-                        (set-buffer-multibyte nil)
-                        (insert-file-contents-literally wav-file)
-                        (buffer-string))))
-    (concat
-     "--" boundary "\r\n"
-     "Content-Disposition: form-data; name=\"file\"; filename=\""
-     (file-name-nondirectory wav-file) "\"\r\n"
-     "Content-Type: audio/wav\r\n\r\n"
-     file-content "\r\n"
-     "--" boundary "\r\n"
-     "Content-Disposition: form-data; name=\"response_format\"\r\n\r\n"
-     "text\r\n"
-     "--" boundary "--\r\n")))
-
-(defun pr-whisper--transcribe-via-server (wav-file)
-  "Transcribe WAV-FILE using whisper-server HTTP API."
-  (let* ((marker (point-marker))
-         (original-buf (current-buffer))
-         (url (format "http://localhost:%d/inference" pr-whisper-server-port))
-         (boundary (format "----EmacsFormBoundary%d" (random 1000000000)))
-         (url-request-method "POST")
-         (url-request-extra-headers
-          `(("Content-Type" . ,(concat "multipart/form-data; boundary=" boundary))))
-         (url-request-data (pr-whisper--make-multipart-body wav-file boundary)))
-    ;; Wait for server to be ready (should already be warm from recording time)
-    (pr-whisper--wait-for-server 5)
-    (url-retrieve
-     url
-     (lambda (status)
-       (if (plist-get status :error)
-           (message "Whisper server error: %s" (plist-get status :error))
-         (goto-char (point-min))
-         (re-search-forward "\r?\n\r?\n" nil t)  ; Skip HTTP headers
-         (let ((output (string-trim (buffer-substring (point) (point-max)))))
-           (cond
-            ((string-empty-p output)
-             (message "Whisper: No transcription output."))
-            ((pr-whisper--noise-p output)
-             (message "Whisper: Ignored noise: %s" output))
-            (t
-             ;; Add to history first, before attempting insertion
-             (pr-whisper--add-to-history output (buffer-name original-buf))
-             (when (buffer-live-p original-buf)
-               (with-current-buffer original-buf
-                 (condition-case nil
-                     (if (eq major-mode 'vterm-mode)
-                         (vterm-send-string (concat output " "))
-                       (goto-char marker)
-                       (insert output " "))
-                   (buffer-read-only
-                    (message "Whisper: Buffer is read-only, text saved to history: %s"
-                             (truncate-string-to-width output 50 nil nil "..."))))))))))
-       ;; Cleanup
-       (kill-buffer)
-       (when (file-exists-p wav-file)
-         (delete-file wav-file))
-       ;; Stop server after transcription
-       (pr-whisper--stop-server))
-     nil t)))
 
 (defun pr-whisper-record-audio ()
   "Record audio, store it in the specified WAV-FILE."
@@ -539,8 +433,9 @@ When recording stops, transcribed text is inserted at point.
     ;; Stop minor mode: stop recording if active
     (when pr-whisper--recording-process-name
       (pr-whisper-stop-record))
-    ;; Ensure server is stopped when mode is disabled
-    (pr-whisper--stop-server)
+    ;; Ensure server is stopped when mode is disabled (only if loaded)
+    (when (fboundp 'pr-whisper--stop-server)
+      (pr-whisper--stop-server))
     (setq pr-whisper--wav-file nil)))
 
 ;;;###autoload
