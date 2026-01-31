@@ -248,12 +248,12 @@ If MODEL is nil, use `pr-whisper-model'."
 The VOCAB-WORD-COUNT is the number of words detected in the vocabulary file."
   (if (and vocab-word-count (> vocab-word-count 150))
       (message "\
-Recording starting with %s. Editing halted. Press C-g to stop.
+Recording starting with %s.
 WARNING: Vocabulary file has %d words (max: 150)!"
                (pr-whisper-model-desc model)
                vocab-word-count)
     (message "\
-Recording starting with %s. Editing halted. Press C-g to stop."
+Recording starting with %s."
              (pr-whisper-model-desc model))))
 
 (defvar pr-whisper--recording-process-name nil
