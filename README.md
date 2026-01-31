@@ -118,6 +118,8 @@ Run `M-x customize-group RET pr-whisper RET` to access all customization options
   - `ggml-medium.en.bin` - Accurate mode (slower, better accuracy)
   - Custom model filename
 - **pr-whisper-vocabulary-file**: Path to vocabulary hints file (default: `~/.emacs.d/whisper-vocabulary.txt`)
+- **pr-whisper-backend**: Transcription backend - `cli` (default) or `server`
+- **pr-whisper-server-port**: Port for whisper-server (default: 8178)
 
 ### Custom Configuration in init.el
 
@@ -130,6 +132,10 @@ Run `M-x customize-group RET pr-whisper RET` to access all customization options
 
 ;; Set custom vocabulary file location
 (setq pr-whisper-vocabulary-file "~/Documents/vocabulary.txt")
+
+;; Use server backend for faster transcription (~29% speedup)
+;; Server starts during recording and warms up while you speak
+(setq pr-whisper-backend 'server)
 ```
 
 ### Custom Key Bindings
@@ -167,6 +173,7 @@ This transcription discusses classical Greek philosophy, including scholars and 
 2. **"whisper-cli: command not found" or path errors**
    - Ensure Whisper.cpp is built and the path is correct
    - Check that `~/whisper.cpp/build/bin/whisper-cli` exists
+   - For server backend, check that `~/whisper.cpp/build/bin/whisper-server` exists
    - If installed elsewhere, customize `pr-whisper-homedir` to match your installation
    - Run `M-x customize-group RET pr-whisper RET` to verify paths
 
@@ -205,6 +212,20 @@ sox -d -r 16000 -c 1 -b 16 test.wav trim 0 5
 ## License
 
 This project is released under the MIT License.
+
+## Development
+
+### Running Tests
+
+```bash
+emacs -Q --batch -L . -l pr-whisper-test.el -f ert-run-tests-batch-and-exit
+```
+
+### Byte Compilation
+
+```bash
+./build
+```
 
 ## Contributing
 
