@@ -60,6 +60,12 @@
 (require 'ring)
 (declare-function vterm-send-string "vterm")
 
+;; Server backend autoloads - loaded on demand when pr-whisper-backend is 'server
+(autoload 'pr-whisper--server-path "pr-whisper-server")
+(autoload 'pr-whisper--start-server "pr-whisper-server")
+(autoload 'pr-whisper--stop-server "pr-whisper-server")
+(autoload 'pr-whisper--transcribe-via-server "pr-whisper-server")
+
 (defgroup pr-whisper nil
   "Speech-to-text using Whisper.cpp system."
   :group 'convenience
@@ -148,7 +154,7 @@ If MODEL is nil, use `pr-whisper-model'."
 
 (defcustom pr-whisper-noise-regexp
   (rx (or (seq "(" (or "typing" "silence" "music" "applause") ")")
-          (seq "[" (or "typing" "silence" "music" "applause") "]")))
+          (seq "[" (* space) (or "typing" "silence" "music" "applause" "pause" "BLANK_AUDIO") (* space) "]")))
   "Regexp matching noise transcriptions to ignore.
 Whisper outputs these when it detects non-speech audio.
 Matching transcriptions are not inserted and not added to history.
@@ -162,6 +168,20 @@ Set to nil to disable noise filtering."
 Transcriptions shorter than this are filtered out."
   :group 'pr-whisper
   :type 'integer)
+
+(defcustom pr-whisper-backend 'cli
+  "Backend to use for transcription.
+`cli' uses whisper-cli directly (default).
+`server' uses whisper-server HTTP API (faster, ~29% speedup)."
+  :type '(choice (const :tag "CLI (whisper-cli)" cli)
+                 (const :tag "Server (HTTP API)" server))
+  :group 'pr-whisper)
+
+(defcustom pr-whisper-server-port 8178
+  "Port for whisper-server.
+Change if 8178 conflicts with another service."
+  :type 'integer
+  :group 'pr-whisper)
 
 (defcustom pr-whisper-vocabulary-file (expand-file-name
                                        (locate-user-emacs-file
@@ -204,16 +224,21 @@ Returns nil if file doesn't exist or is empty."
   "Validate current settings.
 If MODEL is nil, use `pr-whisper-model'."
   (let ((cli-path (pr-whisper--cli-path))
+        (server-path (pr-whisper--server-path))
         (model-path (pr-whisper--model-path model)))
     (unless (executable-find pr-whisper-sox)
       (user-error "The sox command is not accessible; is pr-whisper-sox valid?"))
     (unless (file-directory-p pr-whisper-homedir)
       (user-error "Invalid pr-whisper-homedir (%s)" pr-whisper-homedir))
-    (unless (file-executable-p cli-path)
-      (if (file-exists-p cli-path)
-          (user-error "Whisper-cli (%s) is not an executable file!"
-                      cli-path))
-      (user-error "Whisper-cli (%s) does not exist!" cli-path))
+    (if (eq pr-whisper-backend 'server)
+        (unless (file-executable-p server-path)
+          (if (file-exists-p server-path)
+              (user-error "Whisper-server (%s) is not an executable file!" server-path)
+            (user-error "Whisper-server (%s) does not exist!" server-path)))
+      (unless (file-executable-p cli-path)
+        (if (file-exists-p cli-path)
+            (user-error "Whisper-cli (%s) is not an executable file!" cli-path)
+          (user-error "Whisper-cli (%s) does not exist!" cli-path))))
     (unless (file-exists-p model-path)
       (user-error "Whisper model (%s) does not exist!"
                   model-path))))
@@ -223,18 +248,22 @@ If MODEL is nil, use `pr-whisper-model'."
 The VOCAB-WORD-COUNT is the number of words detected in the vocabulary file."
   (if (and vocab-word-count (> vocab-word-count 150))
       (message "\
-Recording starting with %s. Editing halted. Press C-g to stop.
+Recording starting with %s.
 WARNING: Vocabulary file has %d words (max: 150)!"
                (pr-whisper-model-desc model)
                vocab-word-count)
     (message "\
-Recording starting with %s. Editing halted. Press C-g to stop."
+Recording starting with %s."
              (pr-whisper-model-desc model))))
 
 (defvar pr-whisper--recording-process-name nil
   "Nil when inactive, name of recording process when recording.")
 (defvar pr-whisper--wav-file nil
   "Name of wave-file used during mode execution.")
+(defvar pr-whisper--insertion-marker nil
+  "Marker where transcribed text will be inserted.
+Set when recording starts, used when transcription completes.
+The marker tracks position in its buffer even if user switches buffers.")
 (defvar pr-whisper--history-ring nil
   "Ring of recent transcriptions.
 Each entry is a cons cell (TEXT . BUFFER-NAME).
@@ -249,6 +278,8 @@ Entries are promoted to most recent when re-inserted via
 
 (defun pr-whisper-record-audio ()
   "Record audio, store it in the specified WAV-FILE."
+  ;; Save insertion point before recording starts
+  (setq pr-whisper--insertion-marker (point-marker))
   ;; Start recording audio.
   ;; Use the sox command. Ref: https://sourceforge.net/projects/sox/
   ;;  -d : record audio
@@ -264,6 +295,9 @@ Entries are promoted to most recent when re-inserted via
                    "--no-show-progress")
     (setq pr-whisper--recording-process-name record-process-name)
     (pr-whisper--set-lighter-to pr-whisper-lighter-when-recording)
+    ;; Start server during recording so it warms up while user speaks
+    (when (eq pr-whisper-backend 'server)
+      (pr-whisper--start-server))
     (message "Recording audio!")))
 
 (defun pr-whisper--noise-p (text)
@@ -285,12 +319,45 @@ shorter than `pr-whisper-history-min-length'."
       (setq pr-whisper--history-ring (make-ring pr-whisper-history-capacity)))
     (ring-insert pr-whisper--history-ring (cons text buffer-name))))
 
+(defun pr-whisper--handle-transcription (output)
+  "Handle transcription OUTPUT, inserting at saved marker position.
+Uses `pr-whisper--insertion-marker' set when recording started.
+Checks for empty output, noise, adds to history, and inserts text."
+  (setq output (string-trim output))
+  (let ((marker pr-whisper--insertion-marker)
+        (buf (marker-buffer pr-whisper--insertion-marker)))
+    (cond
+     ((string-empty-p output)
+      (message "Whisper: No transcription output."))
+     ((pr-whisper--noise-p output)
+      (message "Whisper: Ignored noise: %s" output))
+     (t
+      ;; Add to history first, before attempting insertion
+      ;; so transcription is saved even if insertion fails
+      (pr-whisper--add-to-history output (buffer-name buf))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (condition-case nil
+              (if (eq major-mode 'vterm-mode)
+                  (vterm-send-string (concat output " "))
+                (goto-char marker)
+                (insert output " "))
+            (buffer-read-only
+             (message "Whisper: Buffer is read-only, text saved to history: %s"
+                      (truncate-string-to-width output 50 nil nil "..."))))))))))
+
 (defun pr-whisper--transcribe ()
-  "Transcribe audio previously recorded."
+  "Transcribe audio previously recorded.
+Uses server backend if server process is running, otherwise CLI."
+  (if (and (boundp 'pr-whisper--server-process)
+           pr-whisper--server-process
+           (process-live-p pr-whisper--server-process))
+      (pr-whisper--transcribe-via-server pr-whisper--wav-file)
+    (pr-whisper--transcribe-via-cli pr-whisper--wav-file)))
+
+(defun pr-whisper--transcribe-via-cli (wav-file)
+  "Transcribe WAV-FILE using whisper-cli."
   (let* ((model pr-whisper-model)
-         (wav-file pr-whisper--wav-file)
-         (original-buf (current-buffer))
-         (original-point (point-marker)) ; Marker tracks position even if buffer changes
          (vocab-prompt (pr-whisper--get-vocabulary-prompt))
          (temp-buf (generate-new-buffer " *Whisper Temp*"))
 
@@ -316,30 +383,8 @@ shorter than `pr-whisper-history-min-length'."
      :sentinel (lambda (_proc event)
                  (if (string= event "finished\n")
                      (when (buffer-live-p temp-buf)
-                       ;; Trim excess white space
-                       (let ((output (string-trim
-                                      (with-current-buffer temp-buf
-                                        (buffer-string)))))
-                         (cond
-                          ((string-empty-p output)
-                           (message "Whisper: No transcription output."))
-                          ((pr-whisper--noise-p output)
-                           (message "Whisper: Ignored noise: %s" output))
-                          (t
-                           ;; Add to history first, before attempting insertion
-                           ;; so transcription is saved even if insertion fails
-                           (pr-whisper--add-to-history output (buffer-name original-buf))
-                           (when (buffer-live-p original-buf)
-                             (with-current-buffer original-buf
-                               (condition-case nil
-                                   (if (eq major-mode 'vterm-mode)
-                                       (vterm-send-string (concat output " "))
-                                     (goto-char original-point)
-                                     ;; Insert text, then a single space
-                                     (insert output " "))
-                                 (buffer-read-only
-                                  (message "Whisper: Buffer is read-only, text saved to history: %s"
-                                           (truncate-string-to-width output 50 nil nil "...")))))))))
+                       (pr-whisper--handle-transcription
+                        (with-current-buffer temp-buf (buffer-string)))
                        ;; Clean up temporary buffer
                        (kill-buffer temp-buf)
                        ;; And delete WAV file that has been processed.
@@ -399,6 +444,9 @@ When recording stops, transcribed text is inserted at point.
     ;; Stop minor mode: stop recording if active
     (when pr-whisper--recording-process-name
       (pr-whisper-stop-record))
+    ;; Ensure server is stopped when mode is disabled (only if loaded)
+    (when (fboundp 'pr-whisper--stop-server)
+      (pr-whisper--stop-server))
     (setq pr-whisper--wav-file nil)))
 
 ;;;###autoload
