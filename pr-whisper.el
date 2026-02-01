@@ -430,8 +430,9 @@ If USE-DEFAULT-INSERT is non-nil, bypass custom insert function."
 ;;;###autoload
 (defun pr-whisper-toggle-recording (arg)
   "Toggle recording on/off.
-With prefix ARG when stopping, bypass custom insert function."
-  (interactive "*P")
+With prefix ARG when stopping, bypass custom insert function.
+Note: Does not use *P interactive spec since vterm buffers are read-only."
+  (interactive "P")
   (if pr-whisper--recording-process-name
       (pr-whisper-stop-record arg)
     (let ((model pr-whisper-model)
