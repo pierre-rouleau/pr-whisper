@@ -97,8 +97,9 @@
      "text\r\n"
      "--" boundary "--\r\n")))
 
-(defun pr-whisper--transcribe-via-server (wav-file)
-  "Transcribe WAV-FILE using whisper-server HTTP API."
+(defun pr-whisper--transcribe-via-server (wav-file &optional use-default-insert)
+  "Transcribe WAV-FILE using whisper-server HTTP API.
+If USE-DEFAULT-INSERT is non-nil, bypass custom insert function."
   (let* ((url (format "http://localhost:%d/inference" pr-whisper-server-port))
          (boundary (format "----EmacsFormBoundary%d" (random 1000000000)))
          (url-request-method "POST")
@@ -115,7 +116,8 @@
          (goto-char (point-min))
          (re-search-forward "\r?\n\r?\n" nil t)  ; Skip HTTP headers
          (pr-whisper--handle-transcription
-          (buffer-substring (point) (point-max))))
+          (buffer-substring (point) (point-max))
+          use-default-insert))
        ;; Cleanup
        (kill-buffer)
        (when (file-exists-p wav-file)

@@ -153,7 +153,7 @@ If MODEL is nil, use `pr-whisper-model'."
   :type 'integer)
 
 (defcustom pr-whisper-noise-regexp
-  (rx (or (seq "(" (or "typing" "silence" "music" "applause") ")")
+  (rx (or (seq "(" (or "typing" "silence" "music" "applause" "birds chirping") ")")
           (seq "[" (* space) (or "typing" "silence" "music" "applause" "pause" "BLANK_AUDIO") (* space) "]")))
   "Regexp matching noise transcriptions to ignore.
 Whisper outputs these when it detects non-speech audio.
@@ -161,7 +161,10 @@ Matching transcriptions are not inserted and not added to history.
 Set to nil to disable noise filtering."
   :group 'pr-whisper
   :type '(choice (const :tag "No filtering" nil)
-                 (regexp :tag "Filter regexp")))
+                 (regexp :tag "Filter regexp"))
+  :initialize (lambda (sym exp)
+                (unless (get sym 'saved-value)
+                  (set-default-toplevel-value sym (eval exp)))))
 
 (defcustom pr-whisper-history-min-length 3
   "Minimum character length for transcription to be added to history.
@@ -181,6 +184,15 @@ Transcriptions shorter than this are filtered out."
   "Port for whisper-server.
 Change if 8178 conflicts with another service."
   :type 'integer
+  :group 'pr-whisper)
+
+(defcustom pr-whisper-insert-function nil
+  "Function to insert transcribed text.
+If non-nil, called with two arguments: TEXT and MARKER.
+The function is responsible for inserting the text at MARKER.
+If nil, the default insertion behavior is used."
+  :type '(choice (const :tag "Default insertion" nil)
+                 (function :tag "Custom insert function"))
   :group 'pr-whisper)
 
 (defcustom pr-whisper-vocabulary-file (expand-file-name
@@ -301,9 +313,11 @@ Entries are promoted to most recent when re-inserted via
     (message "Recording audio!")))
 
 (defun pr-whisper--noise-p (text)
-  "Return non-nil if TEXT is noise that should be ignored."
+  "Return non-nil if TEXT is entirely noise that should be ignored.
+Only matches if the entire TEXT is a noise pattern, not partial matches."
   (and pr-whisper-noise-regexp
-       (string-match-p pr-whisper-noise-regexp text)))
+       (string-match-p (concat "\\`\\(?:" pr-whisper-noise-regexp "\\)\\'")
+                       (string-trim text))))
 
 (defun pr-whisper--too-short-p (text)
   "Return non-nil if TEXT is too short for history."
@@ -319,10 +333,25 @@ shorter than `pr-whisper-history-min-length'."
       (setq pr-whisper--history-ring (make-ring pr-whisper-history-capacity)))
     (ring-insert pr-whisper--history-ring (cons text buffer-name))))
 
-(defun pr-whisper--handle-transcription (output)
+(defun pr-whisper-default-insert (text marker)
+  "Insert TEXT at MARKER using default behavior.
+Handles vterm mode and read-only buffers."
+  (when (marker-buffer marker)
+    (with-current-buffer (marker-buffer marker)
+      (condition-case nil
+          (if (eq major-mode 'vterm-mode)
+              (vterm-send-string (concat text " "))
+            (goto-char marker)
+            (insert text " "))
+        (buffer-read-only
+         (message "Whisper: Buffer is read-only, text saved to history: %s"
+                  (truncate-string-to-width text 50 nil nil "...")))))))
+
+(defun pr-whisper--handle-transcription (output &optional use-default-insert)
   "Handle transcription OUTPUT, inserting at saved marker position.
 Uses `pr-whisper--insertion-marker' set when recording started.
-Checks for empty output, noise, adds to history, and inserts text."
+Checks for empty output, noise, adds to history, and inserts text.
+If USE-DEFAULT-INSERT is non-nil, bypass custom insert function."
   (setq output (string-trim output))
   (let ((marker pr-whisper--insertion-marker)
         (buf (marker-buffer pr-whisper--insertion-marker)))
@@ -335,28 +364,24 @@ Checks for empty output, noise, adds to history, and inserts text."
       ;; Add to history first, before attempting insertion
       ;; so transcription is saved even if insertion fails
       (pr-whisper--add-to-history output (buffer-name buf))
-      (when (buffer-live-p buf)
-        (with-current-buffer buf
-          (condition-case nil
-              (if (eq major-mode 'vterm-mode)
-                  (vterm-send-string (concat output " "))
-                (goto-char marker)
-                (insert output " "))
-            (buffer-read-only
-             (message "Whisper: Buffer is read-only, text saved to history: %s"
-                      (truncate-string-to-width output 50 nil nil "..."))))))))))
+      (if (and pr-whisper-insert-function
+               (not use-default-insert))
+          (funcall pr-whisper-insert-function output marker)
+        (pr-whisper-default-insert output marker))))))
 
-(defun pr-whisper--transcribe ()
+(defun pr-whisper--transcribe (&optional use-default-insert)
   "Transcribe audio previously recorded.
-Uses server backend if server process is running, otherwise CLI."
+Uses server backend if server process is running, otherwise CLI.
+If USE-DEFAULT-INSERT is non-nil, bypass custom insert function."
   (if (and (boundp 'pr-whisper--server-process)
            pr-whisper--server-process
            (process-live-p pr-whisper--server-process))
-      (pr-whisper--transcribe-via-server pr-whisper--wav-file)
-    (pr-whisper--transcribe-via-cli pr-whisper--wav-file)))
+      (pr-whisper--transcribe-via-server pr-whisper--wav-file use-default-insert)
+    (pr-whisper--transcribe-via-cli pr-whisper--wav-file use-default-insert)))
 
-(defun pr-whisper--transcribe-via-cli (wav-file)
-  "Transcribe WAV-FILE using whisper-cli."
+(defun pr-whisper--transcribe-via-cli (wav-file &optional use-default-insert)
+  "Transcribe WAV-FILE using whisper-cli.
+If USE-DEFAULT-INSERT is non-nil, bypass custom insert function."
   (let* ((model pr-whisper-model)
          (vocab-prompt (pr-whisper--get-vocabulary-prompt))
          (temp-buf (generate-new-buffer " *Whisper Temp*"))
@@ -384,7 +409,8 @@ Uses server backend if server process is running, otherwise CLI."
                  (if (string= event "finished\n")
                      (when (buffer-live-p temp-buf)
                        (pr-whisper--handle-transcription
-                        (with-current-buffer temp-buf (buffer-string)))
+                        (with-current-buffer temp-buf (buffer-string))
+                        use-default-insert)
                        ;; Clean up temporary buffer
                        (kill-buffer temp-buf)
                        ;; And delete WAV file that has been processed.
@@ -394,8 +420,9 @@ Uses server backend if server process is running, otherwise CLI."
                    (message "Whisper process error: %s" event))))))
 
 ;;;###autoload
-(defun pr-whisper-stop-record ()
-  "Stop recording, insert transcribed text at point."
+(defun pr-whisper-stop-record (&optional use-default-insert)
+  "Stop recording, insert transcribed text at point.
+If USE-DEFAULT-INSERT is non-nil, bypass custom insert function."
   (interactive)
   (unless pr-whisper--recording-process-name
     (user-error "Not currently recording"))
@@ -403,14 +430,16 @@ Uses server backend if server process is running, otherwise CLI."
   (setq pr-whisper--recording-process-name nil)
   (message "Audio recording stopped.")
   (pr-whisper--set-lighter-to pr-whisper-lighter-when-idle)
-  (pr-whisper--transcribe))
+  (pr-whisper--transcribe use-default-insert))
 
 ;;;###autoload
-(defun pr-whisper-toggle-recording ()
-  "Toggle recording on/off."
-  (interactive)
+(defun pr-whisper-toggle-recording (arg)
+  "Toggle recording on/off.
+With prefix ARG when stopping, bypass custom insert function.
+Note: Does not use *P interactive spec since vterm buffers are read-only."
+  (interactive "P")
   (if pr-whisper--recording-process-name
-      (pr-whisper-stop-record)
+      (pr-whisper-stop-record arg)
     (let ((model pr-whisper-model)
           (vocab-word-count (pr-whisper--check-vocabulary-length)))
       (pr-whisper--validate-environment model)

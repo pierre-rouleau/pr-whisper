@@ -165,7 +165,10 @@
   (should (pr-whisper--noise-p "[pause]"))
   (should (pr-whisper--noise-p "[PAUSE]"))
   (should-not (pr-whisper--noise-p "Hello world"))
-  (should-not (pr-whisper--noise-p "The silence was deafening")))
+  (should-not (pr-whisper--noise-p "The silence was deafening"))
+  ;; Text with noise markers should not be filtered
+  (should-not (pr-whisper--noise-p "Hello world [BLANK_AUDIO]"))
+  (should-not (pr-whisper--noise-p "(silence) Hello world")))
 
 (ert-deftest pr-whisper-test-too-short-detection ()
   "Test that short transcriptions are detected."
