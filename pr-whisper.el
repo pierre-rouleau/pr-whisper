@@ -63,7 +63,6 @@
 ;; Server backend autoloads - loaded on demand when pr-whisper-backend is 'server
 (autoload 'pr-whisper--server-path "pr-whisper-server")
 (autoload 'pr-whisper--start-server "pr-whisper-server")
-(autoload 'pr-whisper--stop-server "pr-whisper-server")
 (autoload 'pr-whisper--transcribe-via-server "pr-whisper-server")
 
 (defgroup pr-whisper nil
