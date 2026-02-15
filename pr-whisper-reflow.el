@@ -39,6 +39,12 @@ Examples: \"gemini-2.0-flash-lite\", \"qwen2.5:1.5b\" (Ollama)."
   :type 'string
   :group 'pr-whisper)
 
+(defcustom pr-whisper-reflow-min-length 100
+  "Minimum text length in characters to trigger reflow.
+Transcriptions shorter than this are inserted directly without LLM reflow."
+  :type 'natnum
+  :group 'pr-whisper)
+
 (defun pr-whisper-reflow--claude-code-buffer-p (buf)
   "Return non-nil if BUF is a claude-code buffer."
   (and buf
@@ -51,7 +57,8 @@ Reflows TEXT via LLM and inserts at MARKER when complete.
 Only reflows when MARKER's buffer is a claude-code buffer;
 otherwise uses default insertion."
   (let ((buf (marker-buffer marker)))
-    (if (pr-whisper-reflow--claude-code-buffer-p buf)
+    (if (and (pr-whisper-reflow--claude-code-buffer-p buf)
+             (>= (length text) pr-whisper-reflow-min-length))
         (let ((gptel-model pr-whisper-reflow-model))
           (message "Reflowing transcription...")
           (gptel-request
