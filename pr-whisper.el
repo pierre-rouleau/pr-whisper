@@ -59,6 +59,7 @@
 
 (require 'ring)
 (declare-function vterm-send-string "vterm")
+(declare-function ghostel-send-string "ghostel")
 
 ;; Server backend autoloads - loaded on demand when pr-whisper-backend is 'server
 (autoload 'pr-whisper--server-path "pr-whisper-server")
@@ -390,14 +391,18 @@ shorter than `pr-whisper-history-min-length'."
 
 (defun pr-whisper-default-insert (text marker)
   "Insert TEXT at MARKER using default behavior.
-Handles vterm mode and read-only buffers."
+Handles vterm mode, ghostel mode, and read-only buffers."
   (when (marker-buffer marker)
     (with-current-buffer (marker-buffer marker)
       (condition-case nil
-          (if (eq major-mode 'vterm-mode)
-              (vterm-send-string (concat text " "))
+          (cond
+           ((eq major-mode 'vterm-mode)
+            (vterm-send-string (concat text " ")))
+           ((eq major-mode 'ghostel-mode)
+            (ghostel-send-string (concat text " ")))
+           (t
             (goto-char marker)
-            (insert text " "))
+            (insert text " ")))
         (buffer-read-only
          (message "Whisper: Buffer is read-only, text saved to history: %s"
                   (truncate-string-to-width text 50 nil nil "...")))))))
