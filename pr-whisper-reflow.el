@@ -1,7 +1,11 @@
 ;;; pr-whisper-reflow.el --- Reflow transcriptions using LLM -*- lexical-binding: t -*-
 
+;; Package-Requires: ((emacs "25.1") (gptel "0.9.9"))
+
 ;;; Commentary:
 ;; Use gptel to reflow whisper transcriptions into logical paragraphs.
+;; Requires gptel >= 0.9.9 (for inline preset specs in
+;; `gptel-with-preset').
 ;;
 ;; Why not a local model? Reflowing requires understanding enough English
 ;; context to identify sentence boundaries, topic transitions, and spoken
@@ -16,10 +20,10 @@
 
 ;;; Code:
 
-(defvar gptel-model)
-(declare-function gptel-request "gptel")
+(require 'gptel)
 (declare-function pr-whisper-default-insert "pr-whisper")
-(defvar pr-whisper-reflow-prompt
+
+(defcustom pr-whisper-reflow-prompt
   "Reflow this transcription into logical paragraphs. Rules:
 1. Replace spoken commands like \"new paragraph\", \"new line\" with actual line breaks
 2. Add paragraph breaks at natural topic transitions
@@ -29,12 +33,23 @@
 Transcription:
 %s"
   "Prompt template for reflowing transcriptions.
-%s is replaced with the transcription text.")
-
-(defcustom pr-whisper-reflow-model "gemini-2.5-flash-lite"
-  "Model to use for reflow.
-Examples: \"gemini-2.0-flash-lite\", \"qwen2.5:1.5b\" (Ollama)."
+%s is replaced with the transcription text."
   :type 'string
+  :group 'pr-whisper)
+
+(defcustom pr-whisper-reflow-backend "Gemini"
+  "gptel backend name for reflow.
+Must match a backend registered with gptel (e.g. \"Gemini\",
+\"ChatGPT\", \"Claude\")."
+  :type 'string
+  :group 'pr-whisper)
+
+(defcustom pr-whisper-reflow-model 'gemini-2.5-flash-lite
+  "Model to use for reflow.
+Must be a symbol matching a model in `pr-whisper-reflow-backend'.
+List available models with:
+  (gptel-backend-models (gptel-get-backend pr-whisper-reflow-backend))"
+  :type 'symbol
   :group 'pr-whisper)
 
 (defcustom pr-whisper-reflow-min-length 100
@@ -59,15 +74,22 @@ Reflows TEXT via LLM and inserts at MARKER when complete.
 Calls `pr-whisper-reflow-predicate' to decide whether to reflow;
 otherwise uses default insertion."
   (if (funcall pr-whisper-reflow-predicate text marker)
-      (let ((gptel-model pr-whisper-reflow-model))
-        (message "Reflowing transcription...")
-        (gptel-request
-         (format pr-whisper-reflow-prompt text)
-         :callback (lambda (response _info)
-                     (pr-whisper-default-insert
-                      (if response (string-trim response) text)
-                      marker)
-                     (message "Reflow complete."))))
+      ;; The buffer's default-directory may no longer exist (e.g. a
+      ;; deleted temp dir), which breaks process invocation in gptel.
+      (let ((default-directory temporary-file-directory))
+        (gptel-with-preset `(:backend ,pr-whisper-reflow-backend
+                            :model ,pr-whisper-reflow-model)
+          (message "Reflowing transcription...")
+          (gptel-request
+           (format pr-whisper-reflow-prompt text)
+           :callback (lambda (response _info)
+                       (if (stringp response)
+                           (progn
+                             (pr-whisper-default-insert
+                              (string-trim response) marker)
+                             (message "Reflow complete."))
+                         (pr-whisper-default-insert text marker)
+                         (message "Reflow failed; inserted original transcription."))))))
     (pr-whisper-default-insert text marker)))
 
 (provide 'pr-whisper-reflow)

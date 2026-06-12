@@ -1,5 +1,6 @@
 # Compiled
 *.elc
+llama.cpp
 
 # Packaging
 .cask/
